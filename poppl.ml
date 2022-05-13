@@ -1,33 +1,35 @@
 module Unix = UnixLabels;;
 type name = string;;
 
+(* Special functions, 'native' to POPPL *)
 type o =
 	| Time_of (* log -> time of latest message *)
 	| Most_recent (* (name, ?limit) -> message*)
 	| Message_type_is (* (message, name) -> Float *)
 	| Message_payload (* message -> e *)
 	| Time_passed (* stamp_start, stamp_end, delay -> Float *)
-	| Make_restart_message
 	| Print
-	| Is_more_than
-	| Is_less_than
-	| Is_equal_to
-	| Is_in
+	| Is_more_than (* > *)
+	| Is_less_than (* < *)
+	| Is_equal_to (* = *)
+	| Is_in (* < _ < *)
+	| Not (* Boolean not, 1. -> 0. and 0. -> 1. *)
 ;;
 
+(* Grammar *)
 type e =
-	| Add of name * (e -> e)
-	| Remove of name
-	| Send of e
-	| Lambda of (e -> e)
-	| List of e list
-	| Native of o * (e list)
-	| Variable of name
+	| Add of name * (e -> e) (* Adds a handler  with a name and a function *)
+	| Remove of name (* Removes a handler *)
+	| Send of e (* Sends a message *)
+	| Lambda of (e -> e) (* Function *)
+	| List of e list (* List of expressions *)
+	| Native of o * (e list) (* Native function use *)
+	| Variable of name (* Variable of context *)
 	| Message of name * (e list) (* A message is an identifier and data as a list of expressions *)
-	| Log of (name * (e list)) list
-	| Begin of e
-	| If of e * e * e
-	| Float of float
+	| Log of (name * (e list)) list (* List of messages *)
+	| Begin of e (* Begin *)
+	| If of e * e * e (* If (condition) (true) (false) *)
+	| Float of float 
 	| String of string
 	| Void
 ;;
@@ -90,9 +92,10 @@ let eval_handler handler handler_list log evaluation_context =
 
 (* --- Log handling --- *)
 
-(* Retrieve the newest time message to return the actual system time *)
-let now log = match log with
-	| Log((a,time)::q) -> if a = "time_message" then time else now Log(q)
+(* Retrieve the newest time message to get the actual system time *)
+let rec now log = match log with
+	| Log((a,[time])::q) when a = "time_message" -> time
+	| Log(a::q) -> now (Log(q))
 ;;
 
 (* Returns the number of registered messages *)
@@ -106,14 +109,17 @@ let log_length log = match log with
 let whenever_message_type s body = If(Native(Message_type_is,[String(s)]),body,Void);; 
 
 (* Log query *)
-let whenever_last_messages_in s a b body = If(Native(Message_type_is,[String(s)]),body,Void);; 
+let whenever_last_messages_in s a b body = If(Native(Is_in,[Native(Most_recent,[String(s)]);a;b]),body,Void);; 
+
+(* Log query *)
+let whenever_last_messages_outside_of s a b body = If(Native(Not,[Native(Is_in,[Native(Most_recent,[String(s)]);a;b])]),body,Void);; 
 
 (* After instruction *)
 let after time body log =
 	let n = "after_"^(string_of_int (log_length log)) in 
 	Add(n,
 		fun log -> If(
-			Native(Time_passed,[Native(Time_of,[Native(Most_recent)]);now log;time]),
+			Native(Time_passed,[Native(Time_of,[Native(Most_recent,[])]);(now log);time]),
 			Begin(List([body; Remove(n)])),
 			Void
 		)
@@ -188,8 +194,17 @@ let infusion =
 )
 ;;
 
-let apttchecking = 
+let apttchecking =
+	Handler("aPTTChecking", fun log -> 
+		Begin(List([
+			whenever_last_messages_outside_of "aPTTResult" (Float(59.)) (Float(101.)) (Send(Message("every",[Float(6.)])));
+			whenever_last_messages_in "aPTTResult" (Float(59.)) (Float(101.)) (Send(Message("every",[Float(6.)])));
+		]))
+	)
+;;
 
+
+let H0 = [initially,infusion,apttchecking]
 
 (* Debug *)
 
