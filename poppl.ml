@@ -1,10 +1,9 @@
-module Unix = UnixLabels;;
 type name = string;;
 
 (* Special functions, 'native' to POPPL *)
 type o =
-	| Time_of (* log -> time of latest message *)
-	| Most_recent (* (name, ?limit) -> message*)
+	| Time_of (* () -> time of most recent message *)
+	| Most_recent (* (name, ?limit) -> message *)
 	| Message_type_is (* (message, name) -> Float *)
 	| Message_payload (* message -> e *)
 	| Time_passed (* stamp_start, stamp_end, delay -> Float *)
@@ -16,25 +15,30 @@ type o =
 	| Not (* Boolean not, 1. -> 0. and 0. -> 1. *)
 ;;
 
+
+
 (* Grammar *)
 type e =
 	| Add of name * (e -> e) (* Adds a handler  with a name and a function *)
 	| Remove of name (* Removes a handler *)
-	| Send of e (* Sends a message *)
+	| Send of name * (e list) (* Sends a message *)
 	| Lambda of (e -> e) (* Function *)
 	| List of e list (* List of expressions *)
 	| Native of o * (e list) (* Native function use *)
 	| Variable of name (* Variable of context *)
 	| Message of name * (e list) (* A message is an identifier and data as a list of expressions *)
-	| Log of (name * (e list)) list (* List of messages *)
+	| Log of (name * (e list) * float) list (* List of messages with a time stamp*)
 	| Begin of e (* Begin *)
 	| If of e * e * e (* If (condition) (true) (false) *)
 	| Float of float 
 	| String of string
+	| True (* True boolean *)
+	| False (* False boolean *)
 	| Void
 ;;
 
-type handler = Handler of name * (e -> e);;
+type message = name * (e list);;
+type handler = name * (e -> e);;
 type actor = handler list;;
 type context = (name * e) list;;
 
@@ -42,14 +46,16 @@ type context = (name * e) list;;
 
 (* Returns the list of current registered variables *)
 let context_to_name_list context = 
-	List.map (fun (a,b) -> a) context;;
+	List.map (fun (a,b) -> a) context
+;;
 
 (* Update the given couple (name,value) in the given context *)
 let update_value (name,v) context =
 	let rec aux l acc = match l with
 		| [] -> List.rev acc
 		| (n,v2)::q -> if name = n then aux q ((name,v)::acc) else aux q ((name,v2)::acc)
-	in aux context [];;
+	in aux context []
+;;
 
 (* Applies the values e to the variables names in the given evaluation_context *)
 let apply_values variables e evaluation_context =
@@ -60,48 +66,121 @@ let apply_values variables e evaluation_context =
 					aux q ((name,v)::context) (* If var doesn't exist, we create it *)
 				else
 					aux q (update_value (name,v) context) (* Else we update it *)
-	in aux (List.combine variables e) evaluation_context;;
+	in aux (List.combine variables e) evaluation_context
+;;
 
-(* --- Handlers handling --- *)
-
-(* Adds the (name,e) handler to the given handler_list *)
-let add_handler name e handler_list =
-	let rec browse l = match l with
-		| [] -> (name,e)::handler_list
-		| (n,_)::q -> if n = name then handler_list else browse q in
-	browse handler_list;;
-
-(* Adds the (name,e) handler to the given handler_list *)
-let remove_handler name handler_list =
-	let rec browse l = match l with
-		| [] -> l
-		| (n,e)::q -> if n = name then browse q else (n,e)::(browse q) in
-	browse handler_list;;
-
-(* Evaluates one handler, and returns the final set of handler H and the log *) 
-let eval_handler handler handler_list log evaluation_context = 
-	let rec browse l handler_list log evaluation_context = match l with
-		| [] | [Void] -> (handler_list,log)
-		| a::q -> match a with
-			| Send(e) -> browse (Void::q) handler_list(e::log) evaluation_context
-			| Add(name,e) -> browse (Void::q) (add_handler name e handler_list) log evaluation_context
-			| Remove(name) -> browse (Void::q) (remove_handler (name) handler_list) log evaluation_context
-			in
-	let (name,e) = handler in
-	browse e handler_list log;;
+let rec get_variable_value name evaluation_context = match evaluation_context with
+	| [] -> Void
+	| (n,v)::q -> if n = name then v else get_variable_value name q
+;;
 
 (* --- Log handling --- *)
 
-(* Retrieve the newest time message to get the actual system time *)
-let rec now log = match log with
-	| Log((a,[time])::q) when a = "time_message" -> time
+(* Retrieve the newest time message in order to get the actual system time *)
+let rec now (log : e) = match log with
+	| Log([]) -> 0.
+	| Log((a,_,time)::q) when a = "time_message" -> time
 	| Log(a::q) -> now (Log(q))
 ;;
 
 (* Returns the number of registered messages *)
-let log_length log = match log with
+let log_length (log : e) = match log with
 	| Log(l) -> List.length l
 ;;
+
+
+(* --- Handlers handling --- *)
+
+(* Adds the (name,h) handler to the given handler_list *)
+let add_handler (name : name) (h : e -> e) (handler_list : handler list) =
+	let rec browse l = match l with
+		| [] -> (name,h)::handler_list
+		| (n,_)::q -> if n = name then handler_list else browse q in
+	browse handler_list
+;;
+
+(* Adds the (name,e) handler to the given handler_list *)
+let remove_handler (name : name) (handler_list : handler list) =
+	let rec browse l = match l with
+		| [] -> l
+		| (n,e)::q -> if n = name then browse q else (n,e)::(browse q) in
+	browse handler_list
+;;
+
+let eval_native (o : o) (params : e list) (handler_list : handler list) (log : e) (outgoing_messages : e) (evaluation_context : context) = 
+	let Log(l) = log in
+	match o with
+	| Time_of -> begin match params with
+		| [] | [Void] -> Float(0.)
+		| [Log((s,d,time)::q)] -> Float(time)
+		end
+	| Most_recent -> begin match l with
+		| [] -> Void
+		| (s,d,time)::q -> Log([(s,d,time)])
+		end
+	| Message_type_is -> begin match l with
+		| [] -> Void (* No current message *)
+		| (s,d,time)::q -> let [String(p)] = params in if s = p then True else False
+		end
+;;
+
+let rec eval (e : e) (handler_list : handler list) (log : e) (outgoing_messages : e) (evaluation_context : context) = 
+	let Log(m) = outgoing_messages in
+	match e with
+	| Void -> (Void, handler_list, outgoing_messages, evaluation_context)
+	| Float(f) -> (Float(f), handler_list, outgoing_messages, evaluation_context)
+	| String(f) -> (String(f), handler_list, outgoing_messages, evaluation_context)
+	| Variable(name) -> (get_variable_value name evaluation_context, handler_list, log, evaluation_context)
+	| Send(n, d) -> eval (Void) handler_list log (Log(m@[(n,d,now log)])) evaluation_context (* Appending at the end of the list in order to implement a Queue-like structure *)
+	| Add(name,e) -> eval (Void) (add_handler name e handler_list) log outgoing_messages evaluation_context
+	| Remove(name) -> eval (Void) (remove_handler (name) handler_list) log outgoing_messages evaluation_context
+	| Begin(List(l)) -> begin let rec browse_list l handler_list log outgoing_messages evaluation_context = match l with
+		| [] -> (Void, handler_list, outgoing_messages, evaluation_context)
+		| a::q -> let (e, handler_list, outgoing_messages, evaluation_context) = eval a handler_list log outgoing_messages evaluation_context in browse_list q handler_list log outgoing_messages evaluation_context
+		in browse_list l handler_list log outgoing_messages evaluation_context
+		end
+	| If(c, t, f) -> begin match c with 
+		| True | Float(0.) -> eval t handler_list log outgoing_messages evaluation_context (* "True" *)							
+		| False | Message(_, _) | Log(_) | Void | Lambda(_) -> eval f handler_list log outgoing_messages evaluation_context (* "False" *)
+		| x -> let (e,handler_list,outgoing_messages, evaluation_context) = eval x handler_list log outgoing_messages evaluation_context in 
+				eval (If(e, t, f)) handler_list log outgoing_messages evaluation_context
+		end
+	| Native(o, a) -> let e = eval_native o a handler_list log outgoing_messages evaluation_context in eval e handler_list log outgoing_messages evaluation_context
+
+;;
+
+(* Evaluates one handler, and returns the next set of handler H and the outgoing messages *) 
+let eval_handler (handler : handler) (handler_list : handler list) (log : e) (outgoing_messages : e) (evaluation_context : context) = 
+	let (_,f) = handler in
+	eval (f log) handler_list log outgoing_messages evaluation_context
+;;
+
+(* Triggers all given handlers for a given log, while registering and keeping up to date the future
+	set of handler h_f, the outgoing messages that need to be sent and the 
+	evaluation context *)
+let browse_handlers (h : handler list) (log : e) (evaluation_context : context) = 
+	let rec build_future_handler_set (h : handler list) (h_f : handler list) (log : e) (outgoing_messages : e) (evaluation_context : context) = match h with
+		| [] -> (h_f, outgoing_messages, evaluation_context)
+		| a::q -> let (_, h_f, outgoing_messages, evaluation_context) = eval_handler a h_f log outgoing_messages evaluation_context in
+						 build_future_handler_set q h_f log outgoing_messages evaluation_context
+	in build_future_handler_set h h log (Log([])) evaluation_context (* We build the future handler set based on the actual one, with an empty starting outgoing messages list *)
+;;
+
+(* Looping over outgoing messages, and for each one we trigger all the handlers *)
+let rec browse_outgoing_messages (h : handler list) (log : e) (outgoing_messages : e) (evaluation_context : context) = 
+	let Log(l) = log in
+	match outgoing_messages with
+	| Log([]) -> (h, log, evaluation_context)
+	| Log(a::q) -> let (h_f, Log(outgoing_messages_to_add), evaluation_context) = browse_handlers h (Log(a::l)) evaluation_context in
+				browse_outgoing_messages h_f (Log(a::l)) (Log(q@outgoing_messages_to_add)) evaluation_context
+;;
+
+let run (h0 : handler list) =  
+	browse_outgoing_messages h0 (Log([])) (Log([("initialisation",[],0.)])) []
+;;
+
+
+
 
 (* --- Syntax shortcuts --- *)
 
@@ -115,11 +194,11 @@ let whenever_last_messages_in s a b body = If(Native(Is_in,[Native(Most_recent,[
 let whenever_last_messages_outside_of s a b body = If(Native(Not,[Native(Is_in,[Native(Most_recent,[String(s)]);a;b])]),body,Void);; 
 
 (* After instruction *)
-let after time body log =
+let after (time : e) (body : e) (log : e) =
 	let n = "after_"^(string_of_int (log_length log)) in 
 	Add(n,
 		fun log -> If(
-			Native(Time_passed,[Native(Time_of,[Native(Most_recent,[])]);(now log);time]),
+			Native(Time_passed,[Native(Time_of,[Native(Most_recent,[])]);Float(now log);time]),
 			Begin(List([body; Remove(n)])),
 			Void
 		)
@@ -130,26 +209,27 @@ let after time body log =
 (* --- Debug --- *)
 
 let initially = 
-	Handler("initially", fun log ->
+	("initially", fun log ->
 		Begin(
 			List([
-				Send(Message("giveBolus",[Float(80.);String("HEParin");String("iv")]));
-				Send(Message("start",[Float(3.);String("HEParin")]))
+				Send(("giveBolus",[Float(80.);String("HEParin");String("iv")]));
+				Send(("start",[Float(3.);String("HEParin")]));
+				Remove("initially")
 			])
 		)
 	)
 ;;
 
 let infusion = 
-	Handler("infusion", fun log -> (whenever_message_type "aPTTResult" 
+	("infusion", fun log -> (whenever_message_type "aPTTResult" 
 		(Begin(
 			List([
 				If(
 					Native(Is_less_than,[Variable("aPTT");Float(45.)]),
 					Begin(
 						List([
-							Send(Message("giveBolus",[Float(80.);String("HEParin");String("iv")]));
-							Send(Message("increase",[Float(3.);String("HEParin")]));
+							Send(("giveBolus",[Float(80.);String("HEParin");String("iv")]));
+							Send(("increase",[Float(3.);String("HEParin")]));
 						])
 					),
 					Void
@@ -158,8 +238,8 @@ let infusion =
 					Native(Is_in,[Variable("aPTT");Float(45.);Float(59.)]),
 					Begin(
 						List([
-							Send(Message("giveBolus",[Float(40.);String("HEParin");String("iv")]));
-							Send(Message("increase",[Float(1.);String("HEParin")]));
+							Send(("giveBolus",[Float(40.);String("HEParin");String("iv")]));
+							Send(("increase",[Float(1.);String("HEParin")]));
 						])
 					),
 					Void
@@ -168,7 +248,7 @@ let infusion =
 					Native(Is_in,[Variable("aPTT");Float(101.);Float(123.)]),
 					Begin(
 						List([
-							Send(Message("decrease",[Float(1.);String("HEParin")]));
+							Send(("decrease",[Float(1.);String("HEParin")]));
 						])
 					),
 					Void
@@ -177,11 +257,11 @@ let infusion =
 					Native(Is_more_than,[Variable("aPTT");Float(123.)]),
 					Begin(
 						List([
-							Send(Message("hold",[String("HEParin")]));
+							Send(("hold",[String("HEParin")]));
 							after (Float(1.)) (Begin(
 								List([
-									Send(Message("restart",[String("HEParin")]));
-									Send(Message("decrease",[Float(3.);String("HEParin")]));
+									Send(("restart",[String("HEParin")]));
+									Send(("decrease",[Float(3.);String("HEParin")]));
 								])
 							)) log
 						])
@@ -195,25 +275,20 @@ let infusion =
 ;;
 
 let apttchecking =
-	Handler("aPTTChecking", fun log -> 
+	("aPTTChecking", fun log -> 
 		Begin(List([
-			whenever_last_messages_outside_of "aPTTResult" (Float(59.)) (Float(101.)) (Send(Message("every",[Float(6.)])));
-			whenever_last_messages_in "aPTTResult" (Float(59.)) (Float(101.)) (Send(Message("every",[Float(6.)])));
+			whenever_last_messages_outside_of "aPTTResult" (Float(59.)) (Float(101.)) (Send(("every",[Float(6.)])));
+			whenever_last_messages_in "aPTTResult" (Float(59.)) (Float(101.)) (Send(("every",[Float(6.)])));
 		]))
 	)
 ;;
 
 
-let H0 = [initially,infusion,apttchecking]
+let h0 = [initially;infusion;apttchecking];;
 
+
+
+
+run h0;;
 (* Debug *)
-
-let run =
-	while true do
-		Unix.sleep 1;
-		
-	done;;
-run;;
-
-		
 
