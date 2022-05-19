@@ -15,8 +15,6 @@ type o =
 	| Not (* Boolean not, 1. -> 0. and 0. -> 1. *)
 ;;
 
-
-
 (* Grammar *)
 type e =
 	| Add of name * (e -> e) (* Adds a handler  with a name and a function *)
@@ -107,29 +105,87 @@ let remove_handler (name : name) (handler_list : handler list) =
 	browse handler_list
 ;;
 
-let eval_native (o : o) (params : e list) (handler_list : handler list) (log : e) (outgoing_messages : e) (evaluation_context : context) = 
-	let Log(l) = log in
-	match o with
-	| Time_of -> begin match params with
-		| [] | [Void] -> Float(0.)
-		| [Log((s,d,time)::q)] -> Float(time)
-		end
-	| Most_recent -> begin match l with
-		| [] -> Void
-		| (s,d,time)::q -> Log([(s,d,time)])
-		end
-	| Message_type_is -> begin match l with
-		| [] -> Void (* No current message *)
-		| (s,d,time)::q -> let [String(p)] = params in if s = p then True else False
-		end
+let rec find_message (log : e) (n : string) = match log with
+	| Log([]) -> Void
+	| Log((s,d,time)::q) -> if s = n then (Log([(s,d,time)])) else find_message (Log(q)) n
 ;;
 
 let rec eval (e : e) (handler_list : handler list) (log : e) (outgoing_messages : e) (evaluation_context : context) = 
+	let rec eval_native (o : o) (params : e list) (handler_list : handler list) (log : e) (outgoing_messages : e) (evaluation_context : context) = 
+		let Log(l) = log in
+		match o with
+		| Time_of -> begin match params with
+			| [] | [Void] 			-> 	Float(0.)
+			| [Log((s,d,time)::q)] 	-> 	Float(time)
+			| [e] 					->	let (v,_,_,_) = (eval e handler_list log outgoing_messages evaluation_context) in 
+										eval_native o [v] handler_list log outgoing_messages evaluation_context
+			end
+		| Most_recent	-> begin match l with
+			| []	-> Void
+			| (s,d,t)::q 	-> begin match params with
+				| []		 	-> 	Log([(s,d,t)])
+				| [String(n)] 	-> 	find_message log n
+				| [e] 			-> 	let (v,_,_,_) = (eval e handler_list log outgoing_messages evaluation_context) in 
+									eval_native o [v] handler_list log outgoing_messages evaluation_context
+				end
+			end
+		| Message_type_is -> begin match l with
+			| [] 			->	Void (* No current message *)
+			| (s,d,time)::q ->	begin match params with 
+				| [String(p)] 	-> 	if s = p then True else False
+				| [e] 			-> 	let (v,_,_,_) = (eval e handler_list log outgoing_messages evaluation_context) in 
+									eval_native o [v] handler_list log outgoing_messages evaluation_context
+				end
+			end
+		| Not -> begin match params with 
+			| [Void] 	-> 	Void
+			| [True] 	-> 	False
+			| [False]	-> 	True
+			| [e] 		-> 	let (v,_,_,_) = (eval e handler_list log outgoing_messages evaluation_context) in 
+							eval_native o [v] handler_list log outgoing_messages evaluation_context
+			end
+		| Is_in -> begin match params with
+			| []									-> 	Void
+			| [Void;_;_] | [_;Void;_] | [_;_;Void]	-> 	Void
+			| [Float(time);Float(s);Float(f)] 		-> 	if time < f && time >= s then True else False
+			| [c;a;b] 								-> 	let (v,_,_,_) = eval c handler_list log outgoing_messages evaluation_context in
+														let (s,_,_,_) = eval a handler_list log outgoing_messages evaluation_context in
+														let (f,_,_,_) = eval b handler_list log outgoing_messages evaluation_context in
+														eval_native o [v;s;f] handler_list log outgoing_messages evaluation_context
+			end
+		| Is_less_than -> begin match params with
+			| [] 					-> 	Void
+			| [Float(s);Float(f)] 	-> 	if s <= f then True else False
+			| [a;b] 				-> 	let (s,_,_,_) = eval a handler_list log outgoing_messages evaluation_context in
+										let (f,_,_,_) = eval b handler_list log outgoing_messages evaluation_context in
+										eval_native o [s;f] handler_list log outgoing_messages evaluation_context
+			end
+		| Is_more_than -> begin match params with
+			| [] 					-> Void
+			| [Float(s);Float(f)] 	-> if s >= f then True else False
+			| [a;b] 				-> 	let (s,_,_,_) = eval a handler_list log outgoing_messages evaluation_context in
+										let (f,_,_,_) = eval b handler_list log outgoing_messages evaluation_context in
+										eval_native o [s;f] handler_list log outgoing_messages evaluation_context
+			end
+		| Is_equal_to -> begin match params with
+			| [] 					->	Void
+			| [Float(s);Float(f)] 	-> 	if s = f then True else False
+			| [a;b] 				-> 	let (s,_,_,_) = eval a handler_list log outgoing_messages evaluation_context in
+										let (f,_,_,_) = eval b handler_list log outgoing_messages evaluation_context in
+										eval_native o [s;f] handler_list log outgoing_messages evaluation_context
+			end
+		| Time_passed -> begin match params with
+			| [] 													-> Void
+			| [Float(actual_time);Float(sent_time);Float(delay)] 	-> 	if sent_time +. delay > actual_time then True else False
+			| [c;a;b] 												-> 	let (v,_,_,_) = eval c handler_list log outgoing_messages evaluation_context in
+																		let (s,_,_,_) = eval a handler_list log outgoing_messages evaluation_context in
+																		let (f,_,_,_) = eval b handler_list log outgoing_messages evaluation_context in
+																		eval_native o [v;s;f] handler_list log outgoing_messages evaluation_context
+			end
+		in
 	let Log(m) = outgoing_messages in
 	match e with
-	| Void -> (Void, handler_list, outgoing_messages, evaluation_context)
-	| Float(f) -> (Float(f), handler_list, outgoing_messages, evaluation_context)
-	| String(f) -> (String(f), handler_list, outgoing_messages, evaluation_context)
+	| Void | True | False | Float(_) | String(_) | Log(_) -> (e, handler_list, outgoing_messages, evaluation_context)
 	| Variable(name) -> (get_variable_value name evaluation_context, handler_list, log, evaluation_context)
 	| Send(n, d) -> eval (Void) handler_list log (Log(m@[(n,d,now log)])) evaluation_context (* Appending at the end of the list in order to implement a Queue-like structure *)
 	| Add(name,e) -> eval (Void) (add_handler name e handler_list) log outgoing_messages evaluation_context
@@ -180,8 +236,6 @@ let run (h0 : handler list) =
 ;;
 
 
-
-
 (* --- Syntax shortcuts --- *)
 
 (* Whenever a message is received *)
@@ -206,7 +260,7 @@ let after (time : e) (body : e) (log : e) =
 ;;
 
 
-(* --- Debug --- *)
+(* --- Snippets --- *)
 
 let initially = 
 	("initially", fun log ->
@@ -289,6 +343,5 @@ let h0 = [initially;infusion;apttchecking];;
 
 
 
-run h0;;
 (* Debug *)
 
