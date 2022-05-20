@@ -115,7 +115,7 @@ let rec eval (e : e) (handler_list : handler list) (log : e) (outgoing_messages 
 		let Log(l) = log in
 		match o with
 		| Time_of -> begin match params with
-			| [] | [Void] 			-> 	Float(0.)
+			| [] | [Void] 			-> 	Void
 			| [Log((s,d,time)::q)] 	-> 	Float(time)
 			| [e] 					->	let (v,_,_,_) = (eval e handler_list log outgoing_messages evaluation_context) in 
 										eval_native o [v] handler_list log outgoing_messages evaluation_context
@@ -137,6 +137,12 @@ let rec eval (e : e) (handler_list : handler list) (log : e) (outgoing_messages 
 									eval_native o [v] handler_list log outgoing_messages evaluation_context
 				end
 			end
+		| Message_payload -> begin match params with
+			| [] | [Void]				->	Void (* No current message *)
+			| [Log((s,e::b,time)::q)] 	-> e	
+			| [e] 						-> 	let (v,_,_,_) = (eval e handler_list log outgoing_messages evaluation_context) in 
+											eval_native o [v] handler_list log outgoing_messages evaluation_context
+			end
 		| Not -> begin match params with 
 			| [Void] 	-> 	Void
 			| [True] 	-> 	False
@@ -146,7 +152,7 @@ let rec eval (e : e) (handler_list : handler list) (log : e) (outgoing_messages 
 			end
 		| Is_in -> begin match params with
 			| []									-> 	Void
-			| [Void;_;_] | [_;Void;_] | [_;_;Void]	-> 	Void
+			| [Void;_;_] | [_;Void;_] | [_;_;Void]	-> 	False (* See p.13 of article *)
 			| [Float(time);Float(s);Float(f)] 		-> 	if time < f && time >= s then True else False
 			| [c;a;b] 								-> 	let (v,_,_,_) = eval c handler_list log outgoing_messages evaluation_context in
 														let (s,_,_,_) = eval a handler_list log outgoing_messages evaluation_context in
@@ -175,8 +181,9 @@ let rec eval (e : e) (handler_list : handler list) (log : e) (outgoing_messages 
 										eval_native o [s;f] handler_list log outgoing_messages evaluation_context
 			end
 		| Time_passed -> begin match params with
-			| [] 													-> Void
-			| [Float(actual_time);Float(sent_time);Float(delay)] 	-> 	if sent_time +. delay > actual_time then True else False
+			| [] 													-> 	Void
+			| [Void;_;_]											-> 	True
+			| [Float(actual_time);Float(sent_time);Float(delay)] 	-> 	if sent_time +. delay < actual_time then True else False
 			| [c;a;b] 												-> 	let (v,_,_,_) = eval c handler_list log outgoing_messages evaluation_context in
 																		let (s,_,_,_) = eval a handler_list log outgoing_messages evaluation_context in
 																		let (f,_,_,_) = eval b handler_list log outgoing_messages evaluation_context in
@@ -242,10 +249,10 @@ let run (h0 : handler list) =
 let whenever_message_type s body = If(Native(Message_type_is,[String(s)]),body,Void);; 
 
 (* Log query *)
-let whenever_last_messages_in s a b body = If(Native(Is_in,[Native(Most_recent,[String(s)]);a;b]),body,Void);; 
+let whenever_last_messages_in s a b body = If(Native(Is_in,[Native(Message_payload,[Native(Most_recent,[String(s)])]);a;b]),body,Void);; 
 
 (* Log query *)
-let whenever_last_messages_outside_of s a b body = If(Native(Not,[Native(Is_in,[Native(Most_recent,[String(s)]);a;b])]),body,Void);; 
+let whenever_last_messages_outside_of s a b body = If(Native(Not,[Native(Is_in,[Native(Message_payload,[Native(Most_recent,[String(s)])]);a;b])]),body,Void);; 
 
 (* After instruction *)
 let after (time : e) (body : e) (log : e) =
@@ -259,6 +266,19 @@ let after (time : e) (body : e) (log : e) =
 	)
 ;;
 
+
+(* Every instruction *)
+(* delay : Duration from which a new message can be sent *)
+(* body : The expression evaluated when the condition is verified *)
+(* message : The message (identifier,data) that is used to get the latest date at wich it was sent in the log *)
+(* log : The actual log *)
+let every (delay : float) (body : e) message (log : e) =
+	let (s,d) = message in
+	If(Native(Time_passed, [Native(Time_of,[Native(Most_recent,[String(s)])]);Float(now log);Float(delay)]),
+		body,
+		Void
+	)
+;;
 
 (* --- Snippets --- *)
 
@@ -331,8 +351,8 @@ let infusion =
 let apttchecking =
 	("aPTTChecking", fun log -> 
 		Begin(List([
-			whenever_last_messages_outside_of "aPTTResult" (Float(59.)) (Float(101.)) (Send(("every",[Float(6.)])));
-			whenever_last_messages_in "aPTTResult" (Float(59.)) (Float(101.)) (Send(("every",[Float(6.)])));
+			every 6. (whenever_last_messages_outside_of "aPTTResult" (Float(59.)) (Float(101.)) (Send(("check",[])))) ("check",[]) log;
+			every 24. (whenever_last_messages_in "aPTTResult" (Float(59.)) (Float(101.)) (Send(("check",[])))) ("check",[]) log;
 		]))
 	)
 ;;
@@ -340,8 +360,4 @@ let apttchecking =
 
 let h0 = [initially;infusion;apttchecking];;
 
-
-
-
-(* Debug *)
 
