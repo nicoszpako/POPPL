@@ -368,7 +368,6 @@ let start (h0 : handler_set) =
 		let (nh, nc) = browse_handlers (!h) (!log) (outgoing_messages) (!context) in
 		h:=nh;
 		log:=append_queue_to_list (!log) (outgoing_messages); (* We add the outgoing message to the log *)
-		Queue.clear outgoing_messages;
 		context:=nc;
 		print_endline ("handler list : "^(string_of_dict nh));
 		print_endline ("log : \n"^(string_of_log (!log)));
@@ -398,13 +397,13 @@ let nat1 (o : o) a = Native(o,[a]);;
 let nat2 (o : o) a b = Native(o,[a;b]);;
 let nat3 (o : o) a b c = Native(o,[a;b;c]);;
 
-let e_test_1 = o_add (2.,[("m",1)]) (3.,[("m",1)]);;
-let e_test_2 = o_add (2.,[("m",1)]) (3.,[("s",1)]);;
-let e_test_3 = o_mul (2.,[("m",1)]) (3.,[("s",1)]);;
-let e_test_4 = o_mul (2.,[("m",1)]) (3.,[("m",-1)]);;
-let e_test_5 = o_div (2.,[("m",1)]) (3.,[("m",1)]);;
-let e_test_6 = o_exp (2.,[("m",1)]);;
-let e_test_7 = Expr(OpMultiply,[Expr(OpAdd,[Value(Measure(2.,[("m",1)]));Value(Measure(3.,[("m",1)]))]);Value(Measure(3.,[("s",1)]))]);;
+let e_test_1 = o_add (2.,[("m",1)]) (3.,[("m",1)]);; (* 2 m + 3 m = 5 m*)
+let e_test_2 = o_add (2.,[("m",1)]) (3.,[("s",1)]);; (* 2 m + 3 s = error*)
+let e_test_3 = o_mul (2.,[("m",1)]) (3.,[("s",1)]);; (* 2 m times 3 s = 6 m s*)
+let e_test_4 = o_mul (2.,[("m",1)]) (3.,[("m",-1)]);; (* 2 m times 3 m^-1 = 6 *)
+let e_test_5 = o_div (2.,[("m",1)]) (3.,[("m",1)]);; (* 2 m divided by 3 m = 2/3 *)
+let e_test_6 = o_exp (2.,[("m",1)]);; (* exp 2 m = error *)
+let e_test_7 = Expr(OpMultiply,[Expr(OpAdd,[Value(Measure(2.,[("m",1)]));Value(Measure(3.,[("m",1)]))]);Value(Measure(3.,[("s",1)]))]);; (* (2 m + 3 m) * 3 s = 15 m s *)
 
 (* Whenever a message is received *)
 let whenever_message_type message_identifier bound_variable_name body = 
