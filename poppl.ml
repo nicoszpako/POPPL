@@ -116,6 +116,7 @@ let string_of_handler h = match h with
 
 let rec string_of_value v = match v with 
 	| Float(f) -> "Float: "^(string_of_float f)
+	| Measure(v,u) -> (string_of_float v)^(List.fold_left (fun s (u,i) -> s^u^(string_of_int i)^" ") "" u)^" "
 	| String(s) -> "String: "^s
 	| Message(name,l) -> "Message: "^name^" "^(string_of_value_list l)
 	| True -> "True"
@@ -472,8 +473,8 @@ let initially =
 	("initially", fun log ->
 		Begin(
 			[
-				Send(("giveBolus",[Value(Float(80.));Value(String("HEParin"));Value(String("iv"))]));
-				Send(("start",[Value(Float(3.));Value(String("HEParin"))]));
+				Send(("giveBolus",[Value(Measure(80.,[("u",1);("kg",-1)]));Value(String("HEParin"));Value(String("iv"))]));
+				Send(("start",[Value(Measure(3.,[("u",1);("kg",-1);("h",-1)]));Value(String("HEParin"))]));
 				Remove("initially")
 			]
 		)
@@ -488,8 +489,8 @@ let infusion =
 					Native(Is_less_than,[Variable("aPTT");Value(Float(45.))]),
 					Begin(
 						[
-							Send(("giveBolus",[Value(Float(80.));Value(String("HEParin"));Value(String("iv"))]));
-							Send(("increase",[Value(Float(3.));Value(String("HEParin"))]));
+							Send(("giveBolus",[Value(Measure(80.,[("u",1);("kg",-1)]));Value(String("HEParin"));Value(String("iv"))]));
+							Send(("increase",[Value(Measure(3.,[("u",1);("kg",-1);("h",-1)]));Value(String("HEParin"))]));
 						]
 					),
 					Value(Void)
@@ -498,8 +499,8 @@ let infusion =
 					Native(Is_in,[Variable("aPTT");Value(Float(45.));Value(Float(59.))]),
 					Begin(
 						[
-							Send(("giveBolus",[Value(Float(40.));Value(String("HEParin"));Value(String("iv"))]));
-							Send(("increase",[Value(Float(1.));Value(String("HEParin"))]));
+							Send(("giveBolus",[Value(Measure(40.,[("u",1);("kg",-1)]));Value(String("HEParin"));Value(String("iv"))]));
+							Send(("increase",[Value(Measure(1.,[("u",1);("kg",-1);("h",-1)]));Value(String("HEParin"))]));
 						]
 					),
 					Value(Void)
@@ -508,7 +509,7 @@ let infusion =
 					Native(Is_in,[Variable("aPTT");Value(Float(101.));Value(Float(123.))]),
 					Begin(
 						[
-							Send(("decrease",[Value(Float(1.));Value(String("HEParin"))]));
+							Send(("decrease",[Value(Measure(1.,[("u",1);("kg",-1);("h",-1)]));Value(String("HEParin"))]));
 						]
 					),
 					Value(Void)
@@ -521,7 +522,7 @@ let infusion =
 							after (now log) 1. (Begin(
 								[
 									Send(("restart",[Value(String("HEParin"))]));
-									Send(("decrease",[Value(Float(3.));Value(String("HEParin"))]));
+									Send(("decrease",[Value(Measure(3.,[("u",1);("kg",-1);("h",-1)]));Value(String("HEParin"))]));
 								]
 							)) log
 						]
