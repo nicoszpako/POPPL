@@ -27,7 +27,17 @@ type e =
 	| Begin of e list (* Begin *)
 	| If of e * e * e (* If (condition) (true) (false) *)
 	| Value of value
+	| Expr of expr (* An operation with parameters *)
+and expr = operation * (e list)
+and operation = 	
+	| OpAdd
+	| OpSubtract
+	| OpMultiply
+	| OpDivide
+	| OpExp
+	| OpLog
 and value = 
+	| Measure of measure
 	| Float of float (* A float *)
 	| String of string (* A string *)
 	| Message of message 
@@ -36,6 +46,9 @@ and value =
 	| Record of record 
 	| Log of log 
 	| Void
+and unit = string
+and units = (unit * int) list
+and measure = float * units
 and message = name * (value list) (* A message is an identifier and data as a list of values *)
 and record = message * float (* A record is a message and a timestamp as a float *)
 and queue = record Queue.t
@@ -117,6 +130,60 @@ let rec string_of_log (log : log) = match log with
 	| ((name,data),time)::q -> (string_of_log (q))^" ["^name^" at "^(string_of_float time)^" ("^(string_of_value_list data)^")]\n"
 ;;
 
+(* --- Mathematical expressions and units handling --- *)
+
+(* Multiply two unit lists *)
+let rec multiply_units (u1 : units) (u2 : units) = 
+	let rec update_units (u1,i1) units acc = match units with
+		| [] -> [(u1,i1)]@(List.rev acc)
+		| (u2,i2)::q -> begin
+					(* Case 1 : the unit both exists in the two units : m times m gives m^2 *)
+					if u1 = u2 then 
+						begin
+							if (i1+i2) <> 0 then (List.rev acc)@[(u1,i2+i1)]@q
+							else (List.rev acc)@q (* The units cancel themselves so we ignore them (ex: m/s times m*s is m^2, seconds have disappeared *)
+						end
+					(* Case 2 : the unit has to be created somewhere (we decided to create it in the second units argument) : m times s gives m*s *)
+					else if u1 > u2 then
+						(List.rev acc)@[(u1,i1);(u2,i2)]@q (* We insert the new unit here to preserve lexicographical order *)
+					else update_units (u1,i1) q ((u2,i2)::acc) (* The unit has to be added further to preserve lexicographical order *)
+				end
+
+	in match u1 with
+	| [] -> u2
+	| (u,i)::q -> multiply_units q (update_units (u,i) u2 [])
+;;
+
+(* Multiply two measures *)
+let multiply (m1 : measure) (m2 : measure) = 
+	let (v1,u1) = m1 and (v2,u2) = m2 in (v1*.v2,multiply_units u1 u2)
+;;
+
+(* Inverts a measure *)
+let invert (m1 : measure) =
+	let (v1,u1) = m1 in (1./.v1, List.map (fun (u,i) -> (u,-i)) u1)
+;;
+
+(* Evaluates a mathematical operation *)
+let eval_op (op : operation) (values : value list) = 
+	(* (v1,u1) stands for (value of first variable, units of first variable) *)
+	let ((v1,u1),(v2,u2)) = match values with 
+		| [(Measure(m1));(Measure(m2))] -> (m1,m2)
+		| [(Measure(m1))] -> (m1,(0.,[])) in
+	match op with
+		| OpAdd -> 		if u1 = u2 then Measure(v1+.v2,u1)
+						else failwith "Adding two quantities of different units"
+		| OpSubtract -> if u1 = u2 then Measure(v1-.v2,u1)
+						else failwith "Subtracting two quantities of different units"
+		| OpMultiply -> Measure(multiply (v1,u1) (v2,u2))
+		| OpDivide -> 	Measure(multiply (v1,u1) (invert (v2,u2)))
+		| OpExp ->		if u1 = [] then Measure(exp v1,[])
+						else failwith "Evaluating a math function with a dimensioned value"
+		| OpLog ->		if u1 = [] then Measure(log v1,[])
+						else failwith "Evaluating a math function with a dimensioned value"
+;;
+
+
 
 (* --- Handlers handling --- *)
 
@@ -168,13 +235,14 @@ let rec find_message (log : log) (n : string) = match log with
 (* Returns : a 4-uplet (next_expression_to_evaluate, new_handler_set, new_outgoing_messages_set, new_context) *)
 let rec eval (e : e) (handler_set : handler_set) (log : log) (outgoing_messages : queue) (context : context) = 
 	
+	
 	(* Evaluates each parameter of the parameters list before evaluating the native expression *)
 	let rec eval_params_and_get_context params context acc = match params with
 		| [] -> (List.rev acc,context)
 		| a::q -> let (v,_,context) = eval a handler_set log outgoing_messages context in eval_params_and_get_context q context (v::acc) in
-	
+
+	(* Native(o,params) constructor evaluation *)
 	let rec eval_native (o : o) (params : e list) (handler_set : handler_set) (log : log) (outgoing_messages : queue) (context : context) =
-		
 		let (values,context) = 	if params = [] then ([],context)
 								else eval_params_and_get_context params context [] in
 		match o with
@@ -251,8 +319,11 @@ let rec eval (e : e) (handler_set : handler_set) (log : log) (outgoing_messages 
 		| x -> let (v,handler_set,context) = eval x handler_set log outgoing_messages context in 
 				eval (If(Value(v), t, f)) handler_set log outgoing_messages context
 		end
-	| Native(o, a) -> let (v,context) = eval_native o a handler_set log outgoing_messages context in eval (Value(v)) handler_set log outgoing_messages context
-
+	| Native(o, params) -> let (v,context) = eval_native o params handler_set log outgoing_messages context in (v, handler_set,context)
+	| Expr(op,params) -> 
+			let (values,context) = 	if params = [] then ([],context)
+									else eval_params_and_get_context params context [] in
+			let r =	eval_op op values in (r, handler_set,context)
 ;;
 
 
@@ -316,6 +387,24 @@ let start (h0 : handler_set) =
 ;;
 
 (* --- Syntax shortcuts --- *)
+
+let o_add (m1 : measure) (m2 : measure) = Expr(OpAdd,[Value(Measure(m1));Value(Measure(m2))]);;
+let o_sub (m1 : measure) (m2 : measure) = Expr(OpSubtract,[Value(Measure(m1));Value(Measure(m2))]);;
+let o_mul (m1 : measure) (m2 : measure) = Expr(OpMultiply,[Value(Measure(m1));Value(Measure(m2))]);;
+let o_div (m1 : measure) (m2 : measure) = Expr(OpDivide,[Value(Measure(m1));Value(Measure(m2))]);;
+let o_exp (m1 : measure) = Expr(OpExp,[Value(Measure(m1))]);;
+let o_log (m1 : measure) = Expr(OpLog,[Value(Measure(m1))]);;
+let nat1 (o : o) a = Native(o,[a]);;
+let nat2 (o : o) a b = Native(o,[a;b]);;
+let nat3 (o : o) a b c = Native(o,[a;b;c]);;
+
+let e_test_1 = o_add (2.,[("m",1)]) (3.,[("m",1)]);;
+let e_test_2 = o_add (2.,[("m",1)]) (3.,[("s",1)]);;
+let e_test_3 = o_mul (2.,[("m",1)]) (3.,[("s",1)]);;
+let e_test_4 = o_mul (2.,[("m",1)]) (3.,[("m",-1)]);;
+let e_test_5 = o_div (2.,[("m",1)]) (3.,[("m",1)]);;
+let e_test_6 = o_exp (2.,[("m",1)]);;
+let e_test_7 = Expr(OpMultiply,[Expr(OpAdd,[Value(Measure(2.,[("m",1)]));Value(Measure(3.,[("m",1)]))]);Value(Measure(3.,[("s",1)]))]);;
 
 (* Whenever a message is received *)
 let whenever_message_type message_identifier bound_variable_name body = 
