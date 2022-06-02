@@ -337,7 +337,6 @@ let rec eval (e : e) (handler_set : handler_set) (log : log) (outgoing_messages 
 (* context : The current context storing the current set of variables *)
 (* Returns : a 4-uplet (Void, new_handler_set, new_outgoing_messages_set, new_context) *)
 let eval_handler (handler : handler) (handler_set : handler_set) (log : log) (outgoing_messages : queue) (context : context) = 
-	print_endline ("evaluating : "^(string_of_handler handler));
 	let (_,f) = handler in
 	eval (f log) handler_set log outgoing_messages context
 ;;
